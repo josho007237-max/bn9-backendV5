@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import morgan from "morgan";
 import dotenv from "dotenv";
-import { lineWebhookMiddleware } from "./services/lineClient.js";
+import { lineClient, lineWebhookMiddleware } from "./services/lineClient";
 
 dotenv.config();
 
@@ -11,14 +11,12 @@ app.use(cors());
 app.use(morgan("dev"));
 app.use(express.json());
 
-// ... (มีพวก route ของ LINE อยู่ข้างล่างนี้)
+// ✅ LINE Webhook
 app.post("/webhook", lineWebhookMiddleware, (req, res) => {
   res.json({ ok: true });
 });
 
-// ⬇️⬇️ ให้เพิ่มตรงนี้ได้เลย ⬇️⬇️
-
-// ✅ Health check endpoint
+// ✅ Health Check (เช็กสถานะเซิร์ฟเวอร์)
 app.get("/health", (req, res) => {
   res.json({
     status: "ok",
@@ -26,10 +24,24 @@ app.get("/health", (req, res) => {
   });
 });
 
-// ⬆️⬆️ แล้วค่อยตามด้วย listen ด้านล่าง ⬆️⬆️
+// ✅ Push Message API (ให้ Postman ใช้)
+app.post("/api/push", async (req, res) => {
+  const { to, text } = req.body;
 
-app.listen(process.env.PORT || 8080, () => {
-  console.log(`BN9 backend running on :${process.env.PORT || 8080}`);
+  if (!to || !text) {
+    return res.status(400).json({ ok: false, error: "Missing 'to' or 'text'" });
+  }
+
+  try {
+    await lineClient.pushMessage(to, { type: "text", text });
+    res.json({ ok: true, message: "Message sent successfully!" });
+  } catch (error: any) {
+    console.error("LINE push error:", error.message);
+    res.status(500).json({ ok: false, error: error.message });
+  }
 });
 
-
+// ✅ Start Server (ต้องอยู่ล่างสุดเสมอ)
+app.listen(process.env.PORT || 8080, () => {
+  console.log(`🚀 BN9 backend running on :${process.env.PORT || 8080}`);
+});
