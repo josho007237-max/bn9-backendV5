@@ -68,8 +68,12 @@ const requireDashboardAuth = (req: Request, res: Response, next: NextFunction) =
 // ---------------------- ROUTES ----------------------
 
 // Health check
-app.get("/health", (_req: Request, res: Response) => {
-  res.json({ status: "ok", time: new Date().toISOString() });
+// ✅ Health check endpoint
+app.get("/health", (req, res) => {
+  res.json({
+    status: "ok",
+    time: new Date().toISOString(),
+  });
 });
 
 // Push message (for Dashboard)
