@@ -1,132 +1,126 @@
-import express from "express";
+import express, { Request, Response, NextFunction } from "express";
 import morgan from "morgan";
 import cors from "cors";
 import dotenv from "dotenv";
-import { Client, middleware as lineMiddleware, type Message, type TextMessage, type FlexMessage } from "@line/bot-sdk";
+import { Client, middleware as lineMiddleware, type Message, type TextMessage, type FlexMessage, type FlexContainer } from "@line/bot-sdk";
 
 dotenv.config();
 
-const app = express();
-const PORT = Number(process.env.PORT || 8080);
-const DASHBOARD_KEY = process.env.DASHBOARD_API_KEY!;
+// ---------------------- ENV ----------------------
+const PORT = process.env.PORT || 8080;
+const DASHBOARD_API_KEY = process.env.DASHBOARD_API_KEY || "super-secret-admin-key";
+const ALLOW_ORIGINS = process.env.ALLOW_ORIGINS || "*";
 const CHANNEL_ACCESS_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN;
 const CHANNEL_SECRET = process.env.LINE_CHANNEL_SECRET;
 
-// ตรวจสอบว่า LINE Token พร้อมไหม
-const hasLINE = CHANNEL_ACCESS_TOKEN && CHANNEL_SECRET;
-if (!hasLINE) {
-  console.warn("⚠️ LINE creds not found. Running in MOCK mode (no real push).");
-}
+const hasLINE = !!(CHANNEL_ACCESS_TOKEN && CHANNEL_SECRET);
 
-// สร้าง LINE Client (หรือ mock ถ้าไม่มี Token)
+// ---------------------- LINE Client ----------------------
 export const lineClient = hasLINE
-  ? new Client({ channelAccessToken: CHANNEL_ACCESS_TOKEN! })
+  ? new Client({
+      channelAccessToken: CHANNEL_ACCESS_TOKEN!,
+      channelSecret: CHANNEL_SECRET!,
+    })
   : ({
-      pushMessage: async (to: string, messages: any) => {
-        console.log("[MOCK] pushMessage →", to);
+      pushMessage: async (to: string, messages: Message[]) => {
+        console.log("[MOCK] pushMessage ->", to);
         console.log("[MOCK] messages:", JSON.stringify(messages, null, 2));
       },
     } as unknown as Client);
 
-// LINE webhook middleware (ใช้จริงถ้ามี secret)
+// ---------------------- EXPRESS APP ----------------------
+const app = express();
+app.use(cors({ origin: ALLOW_ORIGINS.split(","), credentials: true }));
+app.use(morgan("dev"));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// ---------------------- RAW BODY (for LINE signature verify) ----------------------
+app.use((req: Request & { rawBody?: Buffer }, _res: Response, next: NextFunction) => {
+  const chunks: Buffer[] = [];
+  req.on("data", (c) => chunks.push(c as Buffer));
+  req.on("end", () => {
+    req.rawBody = Buffer.concat(chunks);
+    next();
+  });
+});
+
+// ---------------------- LINE WEBHOOK ----------------------
 export const lineWebhookMiddleware = hasLINE
   ? lineMiddleware({
       channelAccessToken: CHANNEL_ACCESS_TOKEN!,
       channelSecret: CHANNEL_SECRET!,
     })
-  : ((req, res, next) => {
+  : ((req: Request, _res: Response, next: NextFunction) => {
       console.log("[MOCK] LINE webhook middleware");
       next();
     }) as any;
 
-// CORS (อนุญาตเฉพาะโดเมน frontend)
-app.use(
-  cors({
-    origin: process.env.ALLOW_ORIGINS?.split(",") || "*",
-    allowedHeaders: ["Content-Type", "Authorization"],
-  })
-);
+// ---------------------- AUTH CHECK ----------------------
+const requireDashboardAuth = (req: Request, res: Response, next: NextFunction) => {
+  const token = req.headers.authorization?.replace("Bearer ", "").trim();
+  if (token !== DASHBOARD_API_KEY) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  next();
+};
 
-// Logger + JSON body parser
-app.use(morgan("tiny"));
-app.use(express.json());
+// ---------------------- ROUTES ----------------------
 
-// =============== Routes ===============
-
-// ✅ Health check
-app.get("/health", (req, res) => {
-  res.json({ ok: true, time: new Date().toISOString() });
+// Health check
+app.get("/health", (_req: Request, res: Response) => {
+  res.json({ status: "ok", time: new Date().toISOString() });
 });
 
-// ✅ Middleware: ตรวจ Authorization
-function requireDashboardAuth(
-  req: express.Request,
-  res: express.Response,
-  next: express.NextFunction
-) {
-  const auth = req.get("authorization") || "";
-  if (auth === `Bearer ${DASHBOARD_KEY}`) return next();
-  return res.status(401).send("Unauthorized");
-}
-
-// ✅ Push API
-app.post("/api/push", requireDashboardAuth, async (req, res) => {
+// Push message (for Dashboard)
+app.post("/api/push", requireDashboardAuth, async (req: Request, res: Response) => {
   try {
-    const { to, text, flex } = req.body ?? {};
-    if (!to) return res.status(400).json({ error: "Missing 'to' (userId/groupId)" });
+    const { to, text, flex } = req.body;
 
     const messages: Message[] = [];
 
     if (flex) {
       const flexMsg: FlexMessage = {
         type: "flex",
-        altText: text ?? "BN9 dashboard message",
-        contents: flex as any,
+        altText: text || "BN9 Notification",
+        contents: flex as FlexContainer,
       };
       messages.push(flexMsg);
+    } else if (text) {
+      const textMsg: TextMessage = { type: "text", text };
+      messages.push(textMsg);
     }
 
-    if (text && !flex) {
-      const txtMsg: TextMessage = { type: "text", text };
-      messages.push(txtMsg);
-    }
-
-    // ส่งข้อความจริง หรือ mock ถ้าไม่มี LINE token
-    await lineClient.pushMessage(to, messages.length === 1 ? messages[0] : messages);
-    res.json({ ok: true, sent: messages.map((m) => m.type) });
-  } catch (e: any) {
-    console.error("❌ push error:", e);
-    res.status(500).json({ error: e.message || String(e) });
+    await lineClient.pushMessage(to, messages);
+    res.json({ success: true, sent: messages });
+  } catch (err: any) {
+    console.error("Push message error:", err);
+    res.status(500).json({ error: "Push message failed", details: err.message });
   }
 });
 
-// ✅ Example: Activity logs
-app.get("/api/activity/logs", requireDashboardAuth, (req, res) => {
-  res.json({
-    activities: [
-      { botName: "BN9", platform: "LINE", userId: "Uxxxx", message: "hi", time: new Date().toISOString() },
-    ],
-  });
+// LINE webhook receiver
+app.post("/webhook", lineWebhookMiddleware, async (req: Request, res: Response) => {
+  try {
+    const events = req.body?.events || [];
+    console.log(`[Webhook] Received ${events.length} events`);
+    for (const ev of events) {
+      if (ev.type === "message" && ev.message.type === "text") {
+        const replyToken = ev.replyToken;
+        const text = ev.message.text;
+        const reply: TextMessage = { type: "text", text: `พี่พลอยได้รับข้อความ "${text}" แล้วนะคะ 💖` };
+        await lineClient.replyMessage(replyToken, [reply]);
+      }
+    }
+    res.status(200).send("OK");
+  } catch (err) {
+    console.error("Webhook error:", err);
+    res.status(500).json({ error: "Webhook processing failed" });
+  }
 });
 
-// ✅ Example: Summarize with AI (mock)
-app.post("/api/activity/summarize-ai", requireDashboardAuth, (req, res) => {
-  res.json({
-    title: "Summary for today",
-    summary: "ผู้ใช้ถามเกี่ยวกับโปรโมชั่นและการเติมเงิน",
-    insights: ["FAQ เรื่องโปรโมชั่น", "แนะนำเพิ่ม Quick Reply", "ลูกค้ากลับมาทักซ้ำหลายรอบ"],
-  });
-});
-
-// ✅ LINE Webhook
-app.post("/webhook/line", lineWebhookMiddleware, async (req, res) => {
-  console.log("[LINE Webhook] Received event:", JSON.stringify(req.body, null, 2));
-  res.status(200).end();
-});
-
-// =============== Start Server ===============
+// ---------------------- START SERVER ----------------------
 app.listen(PORT, () => {
-  console.log(`✅ BN9 backend running on :${PORT}`);
-  if (!hasLINE) console.log("⚠️ Running in MOCK mode (no real push).");
+  console.log(`BN9 backend running on :${PORT}`);
 });
 
