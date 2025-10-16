@@ -55,4 +55,7 @@ const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
   console.log(`BN9 backend running on :${PORT}`);
 });
+app.get('/', (req, res) => {
+  res.status(200).send('BN9 Backend is live ✅');
+});
 
