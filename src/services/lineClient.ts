@@ -63,6 +63,7 @@ export function lineWebhookMiddleware(req: any, res: any, next: any) {
   }
 }
 
+// ส่วนสำคัญใน src/services/lineClient.ts
 export async function handleWebhookEvent(ev: any) {
   if (ev.type !== "message" || ev.message?.type !== "text") return;
 
@@ -70,31 +71,42 @@ export async function handleWebhookEvent(ev: any) {
   const text: string = ev.message?.text || "";
   const replyToken: string = ev.replyToken || "";
 
-  const last = userId ? await findLastByUserId(userId) : null;
+  const last = userId ? await findLastByUserId(userId).catch(() => null) : null;
   const returning = !!last;
 
   const gpt = await classifyAndRespond(text);
-  const ts = new Date().toISOString();
+  const reply = (returning ? "ยินดีต้อนรับกลับค่ะ 🙏\n" : "") + gpt.reply;
 
-  await appendLog(gpt.category, [ts, userId, text, gpt.category, gpt.reason, gpt.reply]);
-
-  if (shouldAlert(gpt.category)) {
-    const alertMsg = [
-      "🚨 เคสใหม่จากลูกค้า BN9",
-      `หมวด: ${gpt.category}`,
-      `userId: ${userId || "-"}`,
-      `ข้อความ: ${text}`,
-      `สรุป: ${gpt.reason}`,
-      returning ? "🟡 ลูกค้าเก่า" : "🟢 ลูกค้าใหม่",
-    ].join("\n");
-    await sendAlertMessage(alertMsg);
+  // 1) ตอบลูกค้าก่อนเสมอ
+  if (replyToken) {
+    await replyText(replyToken, reply).catch((e) =>
+      console.error("reply error:", e)
+    );
   }
 
-  const reply = (returning ? "ยินดีต้อนรับกลับค่ะ 🙏\n" : "") + gpt.reply;
-  if (replyToken) await replyText(replyToken, reply);
+  // 2) ค่อยบันทึกชีต + ส่งแจ้งเตือน (ถ้าพังจะไม่กระทบการตอบ)
+  const ts = new Date().toISOString();
+  const values = [ts, userId, text, gpt.category, gpt.reason, gpt.reply];
+
+  try {
+    await appendLog(gpt.category, values);
+  } catch (e) {
+    console.error("appendLog error:", e);
+  }
+
+  try {
+    if (shouldAlert(gpt.category)) {
+      const alertMsg = [
+        "🚨 เคสใหม่จากลูกค้า BN9",
+        `หมวด: ${gpt.category}`,
+        `userId: ${userId || "-"}`,
+        `ข้อความ: ${text}`,
+        `สรุป: ${gpt.reason}`,
+        returning ? "🟡 ลูกค้าเก่า" : "🟢 ลูกค้าใหม่",
+      ].join("\n");
+      await sendAlertMessage(alertMsg);
+    }
+  } catch (e) {
+    console.error("sendAlert error:", e);
+  }
 }
-
-
-
-
-

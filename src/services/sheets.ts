@@ -14,6 +14,11 @@ const jwt = new google.auth.JWT({
 
 const sheets = google.sheets({ version: "v4", auth: jwt });
 
+// ครอบชื่อแท็บให้ปลอดภัย (กรณีมีช่องว่าง/อักขระพิเศษ)
+function q(title: string) {
+  return `'${title.replace(/'/g, "''")}'`;
+}
+
 let cachedFirstTitle: string | null = null;
 
 async function getFirstSheetTitle(): Promise<string> {
@@ -49,7 +54,7 @@ export async function appendToTab(title: string, values: (string | number)[]) {
   await ensureSheet(title);
   await sheets.spreadsheets.values.append({
     spreadsheetId: SHEET_ID,
-    range: `${title}!A:F`,
+    range: `${q(title)}!A:F`,            // ← ครอบชื่อแท็บ
     valueInputOption: "USER_ENTERED",
     requestBody: { values: [values] },
   });
@@ -59,7 +64,7 @@ export async function findLastByUserId(userId: string) {
   const master = await getFirstSheetTitle();
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: SHEET_ID,
-    range: `${master}!A:F`,
+    range: `${q(master)}!A:F`,           // ← ครอบชื่อแท็บ
     majorDimension: "ROWS",
   });
   const rows = resp.data.values || [];
@@ -75,6 +80,7 @@ export async function appendLog(category: string, values: (string | number)[]) {
   await appendToTab(master, values);
   await appendToTab(category, values);
 }
+
 
 
 
