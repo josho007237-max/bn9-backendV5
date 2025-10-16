@@ -1,86 +1,109 @@
 ﻿// src/services/lineClient.ts
+// LINE client + middleware ตรวจลายเซ็น + ตัวจัดการ event (รวม GPT+Sheets ในที่เดียว)
+
 import crypto from 'crypto';
+import { classifyAndRespond } from './gpt';
+import { appendRow } from './sheets';
 
-const TOKEN  = process.env.LINE_CHANNEL_ACCESS_TOKEN || '';
-const SECRET = process.env.LINE_CHANNEL_SECRET || '';
+const LINE_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN || '';
+const LINE_SECRET = process.env.LINE_CHANNEL_SECRET || '';
 
-const isReal = !!(TOKEN && SECRET);
-
-// ตรวจลายเซ็น (ถ้าไม่มี SECRET ให้ข้ามเป็น MOCK)
-export function lineWebhookMiddleware(req: any, res: any, next: any) {
-  if (!isReal) return next();
-
-  const signature = req.get('X-Line-Signature') || '';
-  const rawBody: Buffer = req.rawBody || Buffer.from('');
-  const hmac = crypto.createHmac('sha256', SECRET).update(rawBody).digest('base64');
-
-  const ok =
-    signature.length === hmac.length &&
-    crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(hmac));
-
-  if (ok) return next();
-
-  console.warn('[LINE] Invalid signature');
-  return res.status(200).send('OK'); // กัน Verify fail
-}
-
-// ตอบ event แบบง่าย (echo)
-export async function handleWebhookEvent(event: any) {
-  if (!isReal) {
-    console.log('[MOCK] event:', JSON.stringify(event));
-    return;
-  }
-  if (event.type === 'message' && event.message?.type === 'text') {
-    await replyText(event.replyToken, `คุณพิมพ์ว่า: ${event.message.text}`);
-  }
-}
-
-// Push ข้อความ
+/** ส่ง push ข้อความถึง userId */
 export async function pushText(to: string, text: string) {
-  if (!isReal) {
-    console.log(`[MOCK] push to=${to} text=${text}`);
+  if (!LINE_TOKEN) {
+    console.log('[LINE MOCK] push to=%s text=%s', to, text);
     return;
   }
-  const resp = await fetch('https://api.line.me/v2/bot/message/push', {
+  const r = await fetch('https://api.line.me/v2/bot/message/push', {
     method: 'POST',
     headers: {
+      Authorization: `Bearer ${LINE_TOKEN}`,
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${TOKEN}`,
     },
     body: JSON.stringify({
       to,
       messages: [{ type: 'text', text }],
     }),
   });
-
-  if (!resp.ok) {
-    const body = await resp.text();
-    console.error('[LINE push] error', resp.status, body);
-    throw new Error(`LINE push failed: ${resp.status}`);
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error(`LINE push error ${r.status}: ${t}`);
   }
 }
 
-// ภายใน: reply
-async function replyText(replyToken: string, text: string) {
-  if (!isReal) {
-    console.log(`[MOCK] reply text=${text}`);
+/** ตอบกลับข้อความด้วย replyToken */
+export async function replyText(replyToken: string, text: string) {
+  if (!LINE_TOKEN) {
+    console.log('[LINE MOCK] reply text=%s', text);
     return;
   }
-  const resp = await fetch('https://api.line.me/v2/bot/message/reply', {
+  const r = await fetch('https://api.line.me/v2/bot/message/reply', {
     method: 'POST',
     headers: {
+      Authorization: `Bearer ${LINE_TOKEN}`,
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${TOKEN}`,
     },
     body: JSON.stringify({
       replyToken,
       messages: [{ type: 'text', text }],
     }),
   });
-  if (!resp.ok) {
-    const body = await resp.text();
-    console.error('[LINE reply] error', resp.status, body);
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error(`LINE reply error ${r.status}: ${t}`);
   }
 }
+
+/** ตรวจลายเซ็นจาก LINE (ถ้ามี secret) */
+export function lineWebhookMiddleware(req: any, res: any, next: any) {
+  if (!LINE_SECRET) return next(); // ไม่มี secret → โหมด MOCK/ข้ามตรวจ
+
+  try {
+    const signature = req.get('x-line-signature') || '';
+    const body = req.rawBody || Buffer.from('');
+    const hmac = crypto.createHmac('sha256', LINE_SECRET).update(body).digest('base64');
+
+    if (signature !== hmac) {
+      console.warn('LINE signature mismatch');
+      return res.status(401).send('Bad signature');
+    }
+    next();
+  } catch (err) {
+    console.error('lineWebhookMiddleware error:', err);
+    res.status(401).send('Signature check fail');
+  }
+}
+
+/** ตัวจัดการ event หลัก (ผูก GPT + Sheets + ตอบกลับ) */
+export async function handleWebhookEvent(ev: any) {
+  try {
+    if (ev.type === 'message' && ev.message?.type === 'text') {
+      const userId: string = ev.source?.userId || '';
+      const userText: string = ev.message?.text || '';
+      const replyToken: string = ev.replyToken;
+
+      // 1) ให้ GPT สร้างคำตอบ + จัดหมวด
+      const result = await classifyAndRespond(userText);
+
+      // 2) บันทึกลง Google Sheets
+      const ts = new Date().toISOString();
+      await appendRow([ts, userId, userText, result.category, result.reason, result.reply]);
+
+      // 3) ตอบกลับผู้ใช้
+      if (replyToken) {
+        await replyText(replyToken, result.reply);
+      } else if (userId) {
+        await pushText(userId, result.reply);
+      }
+      return;
+    }
+
+    // กรณี event อื่น ๆ ที่ยังไม่รองรับ
+    console.log('[LINE] event passthrough:', ev.type);
+  } catch (err) {
+    console.error('handleWebhookEvent error:', err);
+  }
+}
+
 
 
