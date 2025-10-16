@@ -11,12 +11,7 @@ import morgan from 'morgan';
  * - handleWebhookEvent(event): โค้ดจัดการ event ต่าง ๆ (message, follow, ฯลฯ)
  * - pushText(to: string, text: string): ส่ง push message; ถ้าไม่มี token ให้ LOG (MOCK)
  */
-import {
-  lineWebhookMiddleware,
-  handleWebhookEvent,
-  pushText,
-} from './services/lineClient';
-
+import { lineWebhookMiddleware, handleWebhookEvent, pushText } from './services/lineClient.js';
 // ---------- App & Config ----------
 const app = express();
 
