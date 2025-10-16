@@ -1,109 +1,82 @@
 ﻿// src/services/lineClient.ts
-// LINE client + middleware ตรวจลายเซ็น + ตัวจัดการ event (รวม GPT+Sheets ในที่เดียว)
-
 import crypto from 'crypto';
 import { classifyAndRespond } from './gpt';
-import { appendRow } from './sheets';
+import { appendLog, findLastByUserId } from './sheets';
+import { shouldAlert, sendLineNotify } from './notify';
 
 const LINE_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN || '';
 const LINE_SECRET = process.env.LINE_CHANNEL_SECRET || '';
 
-/** ส่ง push ข้อความถึง userId */
-export async function pushText(to: string, text: string) {
-  if (!LINE_TOKEN) {
-    console.log('[LINE MOCK] push to=%s text=%s', to, text);
-    return;
-  }
+export async function pushText(to: string, text: string) { /* เดิมของน้อง ใช้ได้ */ 
+  if (!LINE_TOKEN) { console.log('[LINE MOCK] push', to, text); return; }
   const r = await fetch('https://api.line.me/v2/bot/message/push', {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${LINE_TOKEN}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      to,
-      messages: [{ type: 'text', text }],
-    }),
+    headers: { Authorization: `Bearer ${LINE_TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ to, messages: [{ type: 'text', text }] }),
   });
-  if (!r.ok) {
-    const t = await r.text();
-    throw new Error(`LINE push error ${r.status}: ${t}`);
-  }
+  if (!r.ok) throw new Error(`LINE push ${r.status}: ${await r.text()}`);
 }
 
-/** ตอบกลับข้อความด้วย replyToken */
 export async function replyText(replyToken: string, text: string) {
-  if (!LINE_TOKEN) {
-    console.log('[LINE MOCK] reply text=%s', text);
-    return;
-  }
+  if (!LINE_TOKEN) { console.log('[LINE MOCK] reply', text); return; }
   const r = await fetch('https://api.line.me/v2/bot/message/reply', {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${LINE_TOKEN}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      replyToken,
-      messages: [{ type: 'text', text }],
-    }),
+    headers: { Authorization: `Bearer ${LINE_TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ replyToken, messages: [{ type: 'text', text }] }),
   });
-  if (!r.ok) {
-    const t = await r.text();
-    throw new Error(`LINE reply error ${r.status}: ${t}`);
-  }
+  if (!r.ok) throw new Error(`LINE reply ${r.status}: ${await r.text()}`);
 }
 
-/** ตรวจลายเซ็นจาก LINE (ถ้ามี secret) */
 export function lineWebhookMiddleware(req: any, res: any, next: any) {
-  if (!LINE_SECRET) return next(); // ไม่มี secret → โหมด MOCK/ข้ามตรวจ
-
+  if (!LINE_SECRET) return next();
   try {
-    const signature = req.get('x-line-signature') || '';
-    const body = req.rawBody || Buffer.from('');
-    const hmac = crypto.createHmac('sha256', LINE_SECRET).update(body).digest('base64');
-
-    if (signature !== hmac) {
-      console.warn('LINE signature mismatch');
-      return res.status(401).send('Bad signature');
-    }
+    const sig = req.get('x-line-signature') || '';
+    const raw = req.rawBody || Buffer.from('');
+    const hmac = crypto.createHmac('sha256', LINE_SECRET).update(raw).digest('base64');
+    if (sig !== hmac) return res.status(401).send('Bad signature');
     next();
-  } catch (err) {
-    console.error('lineWebhookMiddleware error:', err);
-    res.status(401).send('Signature check fail');
+  } catch (e) {
+    console.error('signature check:', e);
+    res.status(401).send('Bad signature');
   }
 }
 
-/** ตัวจัดการ event หลัก (ผูก GPT + Sheets + ตอบกลับ) */
 export async function handleWebhookEvent(ev: any) {
-  try {
-    if (ev.type === 'message' && ev.message?.type === 'text') {
-      const userId: string = ev.source?.userId || '';
-      const userText: string = ev.message?.text || '';
-      const replyToken: string = ev.replyToken;
+  if (ev.type !== 'message' || ev.message?.type !== 'text') return;
 
-      // 1) ให้ GPT สร้างคำตอบ + จัดหมวด
-      const result = await classifyAndRespond(userText);
+  const userId: string = ev.source?.userId || '';
+  const text: string = ev.message?.text || '';
+  const replyToken: string = ev.replyToken || '';
 
-      // 2) บันทึกลง Google Sheets
-      const ts = new Date().toISOString();
-      await appendRow([ts, userId, userText, result.category, result.reason, result.reply]);
+  // 1) เช็คลูกค้าเก่า
+  const last = userId ? await findLastByUserId(userId) : null;
+  const returning = !!last;
 
-      // 3) ตอบกลับผู้ใช้
-      if (replyToken) {
-        await replyText(replyToken, result.reply);
-      } else if (userId) {
-        await pushText(userId, result.reply);
-      }
-      return;
-    }
+  // 2) GPT จัดหมวด/ตอบ
+  const gpt = await classifyAndRespond(text);
+  const ts = new Date().toISOString();
 
-    // กรณี event อื่น ๆ ที่ยังไม่รองรับ
-    console.log('[LINE] event passthrough:', ev.type);
-  } catch (err) {
-    console.error('handleWebhookEvent error:', err);
+  // 3) บันทึก (แท็บรวม + แท็บตามหมวด)
+  await appendLog(gpt.category, [ts, userId, text, gpt.category, gpt.reason, gpt.reply]);
+
+  // 4) แจ้งเตือนแอดมิน (เฉพาะหมวดที่กำหนด)
+  if (shouldAlert(gpt.category)) {
+    const msg = [
+      '📣 เคสใหม่ (BN9)',
+      `หมวด: ${gpt.category}`,
+      `user: ${userId || '-'}`,
+      `ลูกค้า: ${text}`,
+      `สรุป: ${gpt.reason}`,
+      returning ? '🟡 ลูกค้าเก่า' : '🟢 ลูกค้าใหม่',
+    ].join('\n');
+    await sendLineNotify(msg);
   }
+
+  // 5) ตอบกลับลูกค้า (ใส่โทน “จำได้ว่าเคยคุย” ถ้า returning)
+  const reply = (returning ? 'ยินดีต้อนรับกลับค่ะ 🙏\n' : '') + gpt.reply;
+  if (replyToken) await replyText(replyToken, reply);
 }
+
 
 
 
