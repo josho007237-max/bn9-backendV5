@@ -1,22 +1,25 @@
+// ✅ src/server.ts
+
 import express from "express";
 import cors from "cors";
 import morgan from "morgan";
 import dotenv from "dotenv";
-import { lineClient, lineWebhookMiddleware } from "./services/lineClient";
+import { lineClient, lineWebhookMiddleware } from "./services/lineClient.js"; // 👈 ต้องมี .js
 
 dotenv.config();
 
 const app = express();
+
 app.use(cors());
 app.use(morgan("dev"));
 app.use(express.json());
 
-// ✅ LINE Webhook
+// ✅ LINE webhook endpoint
 app.post("/webhook", lineWebhookMiddleware, (req, res) => {
   res.json({ ok: true });
 });
 
-// ✅ Health Check (เช็กสถานะเซิร์ฟเวอร์)
+// ✅ Health check endpoint
 app.get("/health", (req, res) => {
   res.json({
     status: "ok",
@@ -24,12 +27,15 @@ app.get("/health", (req, res) => {
   });
 });
 
-// ✅ Push Message API (ให้ Postman ใช้)
+// ✅ Push message endpoint (สำหรับทดสอบยิงข้อความ)
 app.post("/api/push", async (req, res) => {
   const { to, text } = req.body;
 
   if (!to || !text) {
-    return res.status(400).json({ ok: false, error: "Missing 'to' or 'text'" });
+    return res.status(400).json({
+      ok: false,
+      error: "Missing 'to' or 'text'",
+    });
   }
 
   try {
@@ -41,7 +47,9 @@ app.post("/api/push", async (req, res) => {
   }
 });
 
-// ✅ Start Server (ต้องอยู่ล่างสุดเสมอ)
-app.listen(process.env.PORT || 8080, () => {
-  console.log(`🚀 BN9 backend running on :${process.env.PORT || 8080}`);
+// ✅ Start server
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, () => {
+  console.log(`BN9 backend running on :${PORT}`);
 });
+
