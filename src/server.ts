@@ -1,102 +1,83 @@
-// src/services/lineClient.ts
-import crypto from 'crypto';
+// src/server.ts
+import 'dotenv/config';
+import express, { Request, Response, NextFunction } from 'express';
+import cors from 'cors';
+import morgan from 'morgan';
 
-const TOKEN  = process.env.LINE_CHANNEL_ACCESS_TOKEN || '';
-const SECRET = process.env.LINE_CHANNEL_SECRET || '';
+// ใช้ชื่อไฟล์แบบไม่ใส่ .js (เพราะเราคอมไพล์เป็น CommonJS)
+import { lineWebhookMiddleware, handleWebhookEvent, pushText } from './services/lineClient';
 
-/**
- * โหมดจริง = มีทั้ง TOKEN + SECRET
- * โหมด MOCK = ไม่มี credentials จะไม่ยิงไป LINE จริง แค่ console.log
- */
-const isReal = !!(TOKEN && SECRET);
+const app = express();
+const PORT = Number(process.env.PORT || 8080);
 
-/**
- * มิดเดิลแวร์ตรวจลายเซ็น LINE (ถ้ามี SECRET)
- * - ต้องใช้ req.rawBody (ถูกตั้งค่าใน server.ts)
- * - ถ้าไม่ผ่าน ให้ตอบ 200 แล้วข้ามการประมวลผล (กัน Verify fail)
- */
-export function lineWebhookMiddleware(req: any, res: any, next: any) {
-  if (!isReal) return next(); // MOCK: ข้ามการตรวจลายเซ็น
+// CORS
+app.use(cors({ origin: (_origin, cb) => cb(null, true) }));
 
-  const signature = req.get('X-Line-Signature') || '';
-  const rawBody: Buffer = req.rawBody || Buffer.from('');
-  const hmac = crypto.createHmac('sha256', SECRET).update(rawBody).digest('base64');
+// Log
+app.use(morgan('dev'));
 
-  const ok =
-    signature.length === hmac.length &&
-    crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(hmac));
-
-  if (ok) return next();
-
-  console.warn('[LINE] Invalid signature');
-  // ส่ง 200 กลับ เพื่อไม่ให้ Verify fail แต่ไม่ประมวลผล event
-  return res.status(200).send('OK');
-}
-
-/**
- * ตัวอย่าง handler แบบง่าย:
- * - ถ้าเป็นข้อความ text จะ echo กลับ
- * - โหมด MOCK แค่ log event
- */
-export async function handleWebhookEvent(event: any) {
-  if (!isReal) {
-    console.log('[MOCK] event:', JSON.stringify(event));
-    return;
-  }
-  if (event.type === 'message' && event.message?.type === 'text') {
-    await replyText(event.replyToken, `คุณพิมพ์ว่า: ${event.message.text}`);
-  }
-}
-
-/**
- * Push ข้อความ (ต้องมี userId/roomId/groupId ใน field "to")
- */
-export async function pushText(to: string, text: string) {
-  if (!isReal) {
-    console.log(`[MOCK] push to=${to} text=${text}`);
-    return;
-  }
-  const resp = await fetch('https://api.line.me/v2/bot/message/push', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${TOKEN}`,
+// เก็บ rawBody สำหรับตรวจลายเซ็น LINE
+app.use(
+  express.json({
+    verify: (req: any, _res, buf) => {
+      req.rawBody = buf;
     },
-    body: JSON.stringify({
-      to,
-      messages: [{ type: 'text', text }],
-    }),
-  });
+  }),
+);
 
-  if (!resp.ok) {
-    const body = await resp.text();
-    console.error('[LINE push] error', resp.status, body);
-    throw new Error(`LINE push failed: ${resp.status}`);
-  }
-}
+// Root
+app.all('/', (_req, res) => {
+  res.status(200).send('BN9 Backend is live ✅');
+});
 
-/** ใช้ภายใน: reply ตาม replyToken */
-async function replyText(replyToken: string, text: string) {
-  if (!isReal) {
-    console.log(`[MOCK] reply text=${text}`);
-    return;
+// Health
+app.get('/health', (_req, res) => {
+  res.status(200).json({ ok: true, ts: new Date().toISOString() });
+});
+
+// Push message
+app.post('/api/push', async (req: Request, res: Response) => {
+  try {
+    const { to, text } = req.body || {};
+    if (!to || !text) return res.status(400).json({ error: 'Missing "to" or "text"' });
+    await pushText(to, text);
+    return res.status(200).json({ ok: true });
+  } catch (err) {
+    console.error('Push API error:', err);
+    return res.status(500).json({ ok: false, error: 'Push failed' });
   }
-  const resp = await fetch('https://api.line.me/v2/bot/message/reply', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${TOKEN}`,
-    },
-    body: JSON.stringify({
-      replyToken,
-      messages: [{ type: 'text', text }],
-    }),
-  });
-  if (!resp.ok) {
-    const body = await resp.text();
-    console.error('[LINE reply] error', resp.status, body);
+});
+
+// Webhook (ตอบ 200 เสมอ)
+app.post('/webhook', lineWebhookMiddleware as any, async (req: Request, res: Response) => {
+  try {
+    const events = (req.body && (req.body as any).events) || [];
+    for (const ev of events) {
+      await handleWebhookEvent(ev);
+    }
+    res.status(200).send('OK');
+  } catch (err) {
+    console.error('Webhook error:', err);
+    res.status(200).send('OK');
   }
-}
+});
+
+// 404
+app.use((_req, res) => res.status(404).json({ error: 'Not Found' }));
+
+// Error handler
+app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({ error: 'Internal Server Error' });
+});
+
+// Start
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`BN9 backend running on :${PORT}`);
+});
+
+export default app;
+
 
 
 
