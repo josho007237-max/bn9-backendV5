@@ -1,5 +1,5 @@
 // src/services/gpt.ts
-import fetch from 'node-fetch';
+
 import { systemAdvanced, userAdvanced, AdvancedResponse } from './prompts';
 
 export type GPTResult = { reply: string; category: string; reason: string };
