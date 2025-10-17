@@ -1,9 +1,6 @@
 // src/services/notify.ts
 // ใช้ Messaging API แจ้งเตือนแอดมินหรือกลุ่ม LINE แทน LINE Notify
 
-import fetch from "node-fetch";
-
-// ใช้ LINE Messaging API (จาก Official Account ของเรา)
 const LINE_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN || "";
 const ADMIN_USER_ID = process.env.ADMIN_LINE_USERID || ""; // userId ของแอดมิน/กลุ่ม
 
@@ -43,5 +40,3 @@ export async function sendAlertMessage(message: string, userId?: string) {
     console.log("✅ LINE alert sent successfully");
   }
 }
-
-
