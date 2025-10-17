@@ -49,6 +49,9 @@ app.use(cors({ origin: originChecker, credentials: false }));
 app.use("/api", apiRouter);
 app.use("/webhook", webhookRouter);
 
+// Health check endpoint
+app.get("/health", (_req, res) => res.json({ ok: true, timestamp: new Date().toISOString() }));
+
 // Start Server
 const PORT = Number(process.env.PORT) || 8080;
 

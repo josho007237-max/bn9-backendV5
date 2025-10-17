@@ -1,66 +1,65 @@
-import { google } from "googleapis";
+import { google, sheets_v4 } from "googleapis";
 
-const GOOGLE_SERVICE_EMAIL = process.env.GOOGLE_SERVICE_EMAIL;
-const GOOGLE_PRIVATE_KEY = (process.env.GOOGLE_PRIVATE_KEY || "").replace(/\\n/g, "\n");
-const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
-const MASTER_SHEET_TITLE = process.env.MASTER_SHEET_TITLE || "BN9 Logs";
+const rangeName = "Logs!A:G"; // ปรับตามคอลัมน์จริง
 
-function ensureEnv() {
-  if (!GOOGLE_SERVICE_EMAIL || !GOOGLE_PRIVATE_KEY || !GOOGLE_SHEET_ID) {
-    throw new Error("Google Sheets env is not fully configured");
-  }
-}
-
-function getSheets() {
-  ensureEnv();
-  const jwt = new google.auth.JWT(
-    GOOGLE_SERVICE_EMAIL,
-    undefined,
-    GOOGLE_PRIVATE_KEY,
-    ["https://www.googleapis.com/auth/spreadsheets"]
-  );
+function getSheets(): sheets_v4.Sheets {
+  const jwt = new google.auth.JWT({
+    email: process.env.GOOGLE_SERVICE_EMAIL,
+    key: process.env.GOOGLE_SERVICE_KEY?.replace(/\\n/g, "\n"),
+    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+  });
   return google.sheets({ version: "v4", auth: jwt });
 }
 
-// Append one row: [timestamp, userId, userText, category, reason, emotion, tone, botReply]
+export type LogRow = {
+  timestamp: string;  // ISO
+  userId: string;
+  text: string;
+  reply: string;
+  category: string;   // ฝากเงิน/ถอน/สมัคร/อื่นๆ...
+  emotion?: string;   // หงุดหงิด/รีบ/...
+  isUrgent?: boolean; // true/false
+};
+
+// Append one row: [timestamp, userId, text, reply, category, emotion, isUrgent]
 export async function appendLogRow(values: (string | number)[]) {
   const sheets = getSheets();
-  const range = `'${MASTER_SHEET_TITLE}'!A:H`;
   await sheets.spreadsheets.values.append({
     spreadsheetId: GOOGLE_SHEET_ID!,
-    range,
+    range: rangeName,
     valueInputOption: "RAW",
     requestBody: { values: [values] }
   });
 }
 
-// Get last N rows (mapped)
-export async function getLogs(limit = 50) {
+export async function fetchLogs(): Promise<LogRow[]> {
   const sheets = getSheets();
-  const range = `'${MASTER_SHEET_TITLE}'!A:H`;
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: GOOGLE_SHEET_ID!,
-    range
+    range: rangeName,
   });
+
   const rows = res.data.values || [];
-  const slice = rows.slice(-limit);
-  return slice.map(r => ({
-    timestamp: r[0] || "",
-    userId:    r[1] || "",
-    userText:  r[2] || "",
-    category:  r[3] || "",
-    reason:    r[4] || "",
-    emotion:   r[5] || "",
-    tone:      r[6] || "",
-    botReply:  r[7] || ""
-  }));
+  if (rows.length <= 1) return [];
+
+  const header = rows[0].map((h) => (h || "").toString().trim());
+  const idx = (name: string) => header.findIndex((h) => h.toLowerCase() === name.toLowerCase());
+
+  const tIdx = idx("timestamp");
+  const uIdx = idx("userId");
+  const xIdx = idx("text");
+  const rIdx = idx("reply");
+  const cIdx = idx("category");
+  const eIdx = idx("emotion");
+  const zIdx = idx("isUrgent");
+
+  return rows.slice(1).map((r) => ({
+    timestamp: r[tIdx] || "",
+    userId: r[uIdx] || "",
+    text: r[xIdx] || "",
+    reply: r[rIdx] || "",
+    category: r[cIdx] || "",
+    emotion: r[eIdx] || "",
+    isUrgent: (r[zIdx] || "").toString().toLowerCase() === "true",
+  })).filter(r => r.timestamp); // Filter out empty rows
 }
-
-
-
-
-
-
-
-
-

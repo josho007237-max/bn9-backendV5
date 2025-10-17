@@ -1,60 +1,78 @@
-import express from "express";
-import { getLogs } from "../services/sheets";
-import { lineReply, linePush, lineAlert } from "../services/lineClient";
+import { Router } from "express";
+import { adminAuth } from "../middlewares/adminAuth";
+import { fetchLogs, LogRow } from "../services/sheets";
+import { buildStats } from "../services/analytics";
+import OpenAI from "openai";
 
-const router = express.Router();
+const router = Router();
 
 /**
- * GET /api/logs?limit=50
- * ดึง log ล่าสุดจาก Google Sheets (mapped เป็น object)
+ * GET /api/logs
+ * query:
+ *   q=ค้นหา(ใน text/reply)
+ *   category=ฝากเงิน|ถอน|...
+ *   emotion=หงุดหงิด|รีบ|...
+ *   start=2025-10-01
+ *   end=2025-10-31
+ *   userId=Uxxxx
  */
-router.get("/logs", async (req, res) => {
-  try {
-    const limit = Number(req.query.limit || 50);
-    const rows = await getLogs(limit);
-    res.json({ ok: true, rows });
-  } catch (e: any) {
-    res.status(500).json({ ok: false, error: e?.message || String(e) });
-  }
+router.get("/logs", adminAuth, async (req, res) => {
+  const { q, category, emotion, start, end, userId } = req.query as Record<string, string | undefined>;
+  const logs = await fetchLogs();
+
+  const startTs = start ? new Date(start).getTime() : undefined;
+  const endTs   = end   ? new Date(end).getTime()   : undefined;
+
+  const filtered = logs.filter(l => {
+    if (userId && l.userId !== userId) return false;
+    if (category && (l.category || "").toLowerCase() !== category.toLowerCase()) return false;
+    if (emotion && (l.emotion || "").toLowerCase() !== emotion.toLowerCase()) return false;
+    if (q) {
+      const hay = `${l.text} ${l.reply}`.toLowerCase();
+      if (!hay.includes(q.toLowerCase())) return false;
+    }
+    const t = new Date(l.timestamp).getTime();
+    if (startTs && t < startTs) return false;
+    if (endTs && t > endTs) return false;
+    return true;
+  });
+
+  res.json({ ok: true, count: filtered.length, data: filtered });
 });
 
 /**
- * POST /api/reply
- * body: { replyToken?: string, userId?: string, text: string }
- * ถ้ามี replyToken จะใช้ reply, ถ้ามี userId จะใช้ push
+ * GET /api/stats
  */
-router.post("/reply", async (req, res) => {
-  try {
-    const { replyToken, userId, text } = req.body || {};
-    if (!text) return res.status(400).json({ ok: false, error: "text is required" });
-
-    if (replyToken)      await lineReply(replyToken, text);
-    else if (userId)     await linePush(userId, text);
-    else return res.status(400).json({ ok: false, error: "replyToken or userId is required" });
-
-    res.json({ ok: true });
-  } catch (e: any) {
-    res.status(500).json({ ok: false, error: e?.message || String(e) });
-  }
+router.get("/stats", adminAuth, async (_req, res) => {
+  const logs = await fetchLogs();
+  const stats = buildStats(logs);
+  res.json({ ok: true, stats });
 });
 
 /**
- * POST /api/alert
- * body: { message: string }
+ * POST /api/summarize
+ * body: { items: LogRow[] } (ถ้าไม่ส่ง จะสรุปจาก filter ทั้งหมดของวันนี้)
  */
-router.post("/alert", async (req, res) => {
-  try {
-    const { message } = req.body || {};
-    if (!message) return res.status(400).json({ ok: false, error: "message is required" });
-    await lineAlert(message);
-    res.json({ ok: true });
-  } catch (e: any) {
-    res.status(500).json({ ok: false, error: e?.message || String(e) });
-  }
+router.post("/summarize", adminAuth, async (req, res) => {
+  const items: LogRow[] | undefined = req.body?.items;
+  let data = items;
+  if (!data) data = await fetchLogs(); // (จริงๆ ควรรับ query แล้วไป filter อีกรอบ)
+
+  const brief = data!.slice(0, 50)   // กัน prompt ยาวเกิน
+    .map((x) => `• [${x.timestamp}] (${x.category}/${x.emotion||"ปกติ"}) ${x.userId}: ${x.text}`)
+    .join("\n");
+
+  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const prompt = `สรุป insight จากรายการแชทด้านล่างใน 5-8 ข้อ กระชับ เห็นภาพ พร้อม bullet point:
+${brief}`;
+
+  const resp = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    messages: [{ role: "user", content: prompt }],
+  });
+
+  const summary = resp.choices[0]?.message?.content || "(no summary)";
+  res.json({ ok: true, summary });
 });
 
 export default router;
-
-
-
-
