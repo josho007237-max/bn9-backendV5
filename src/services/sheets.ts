@@ -1,5 +1,6 @@
 import { google, sheets_v4 } from "googleapis";
 
+const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
 const rangeName = "Logs!A:G"; // ปรับตามคอลัมน์จริง
 
 function getSheets(): sheets_v4.Sheets {
