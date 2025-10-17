@@ -1,6 +1,6 @@
 // src/services/gpt.ts
 import fetch from 'node-fetch';
-import { systemAdvanced, userAdvanced, AdvancedGPTResponse } from './prompts.js';
+import { systemAdvanced, userAdvanced, AdvancedResponse } from './prompts';
 
 export type GPTResult = { reply: string; category: string; reason: string };
 
@@ -13,7 +13,7 @@ const MODEL = process.env.OPENAI_DEFAULT_MODEL || 'gpt-4o-mini';
  * @param userText The text from the user.
  * @returns A structured response object or a fallback object on error.
  */
-export async function callOpenAI_JSON(userText: string): Promise<AdvancedGPTResponse> {
+export async function callOpenAI_JSON(userText: string): Promise<AdvancedResponse> {
   if (!OPENAI_API_KEY) {
     console.warn('OPENAI_API_KEY is not set. Returning mock data.');
     return {
@@ -54,11 +54,11 @@ export async function callOpenAI_JSON(userText: string): Promise<AdvancedGPTResp
     const rawContent = data?.choices?.[0]?.message?.content ?? '{}';
 
     const parsed = JSON.parse(rawContent);
-    // Basic validation to ensure we have the expected structure
     if (!parsed || typeof parsed !== 'object' || !parsed['ตอบลูกค้า']) {
       throw new Error('Invalid JSON structure from OpenAI');
     }
-    return parsed as AdvancedGPTResponse;
+
+    return parsed as AdvancedResponse;
   } catch (e) {
     console.error('OpenAI call failed:', e);
     return {
