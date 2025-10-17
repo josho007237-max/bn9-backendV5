@@ -1,11 +1,10 @@
 import { Router } from "express";
 import crypto from "crypto";
-import fetch from 'node-fetch';
 import { callOpenAI_JSON } from '../services/gpt.js';
+import { lineReply } from "../services/lineClient.js";
 
 const router = Router();
 
-const LINE_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN;
 const LINE_SECRET = process.env.LINE_CHANNEL_SECRET;
 
 /**
@@ -69,22 +68,5 @@ router.post("/", verifyLineSignature, async (req, res) => {
     // We've already sent a 200, so we just log the error.
   }
 });
-
-async function lineReply(replyToken: string, messages: object[]) {
-  const url = 'https://api.line.me/v2/bot/message/reply';
-  const body = { replyToken, messages };
-  const r = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${LINE_TOKEN}`
-    },
-    body: JSON.stringify(body)
-  });
-  if (!r.ok) {
-    const txt = await r.text();
-    console.error('LINE reply failed', r.status, txt);
-  }
-}
 
 export default router;

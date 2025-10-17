@@ -4,11 +4,16 @@ import cors from "cors";
 import apiRouter from "./routes/api"; // ✅ เพิ่มตรงนี้
 import webhookRouter from "./routes/webhook";
 const app = express();
-app.use(express.json());
-app.use(cors({ origin: true, credentials: true })); // dev ง่ายก่อน
- 
-app.use("/api", apiRouter);
- 
+
+// Middlewares
+app.use(express.json({
+  verify: (req: any, res, buf) => {
+    // Store the raw body buffer onto the request object
+    // This is needed for LINE signature verification
+    req.rawBody = buf;
+  }
+}));
+
 // ===== Safe CORS =====
 const allowAll = (process.env.ALLOW_ORIGINS || "").trim() === "*";
 const allowList = (process.env.ALLOW_ORIGINS || "")
@@ -39,3 +44,14 @@ const originChecker: cors.CorsOptions["origin"] = allowAll
     };
 
 app.use(cors({ origin: originChecker, credentials: false }));
+
+// Routes
+app.use("/api", apiRouter);
+app.use("/webhook", webhookRouter);
+
+// Start Server
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Server is running and listening on port ${PORT}`);
+});
