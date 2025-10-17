@@ -1,112 +1,48 @@
-﻿// src/services/lineClient.ts
-import crypto from "crypto";
-import { classifyAndRespond } from "./gpt";
-import { appendLog, findLastByUserId } from "./sheets";
-import { shouldAlert, sendAlertMessage } from "./notify";
+﻿// ใช้ fetch ของ Node 18+ (global) ไม่ต้องลง node-fetch
+const LINE_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN!;
+const LINE_ADMIN_GROUP_ID = process.env.LINE_ADMIN_GROUP_ID || "";
 
-const LINE_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN || "";
-const LINE_SECRET = process.env.LINE_CHANNEL_SECRET || "";
+type LineMessage = { type: "text"; text: string };
 
-export async function pushText(to: string, text: string) {
-  if (!LINE_TOKEN) {
-    console.log("[LINE MOCK] push", to, text);
-    return;
-  }
-  const r = await fetch("https://api.line.me/v2/bot/message/push", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${LINE_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      to,
-      messages: [{ type: "text", text }],
-    }),
-  });
-  if (!r.ok) {
-    console.error("LINE push error:", await r.text());
-  }
-}
-
-export async function replyText(replyToken: string, text: string) {
-  if (!LINE_TOKEN) {
-    console.log("[LINE MOCK] reply", text);
-    return;
-  }
+export async function lineReply(replyToken: string, messages: LineMessage[] | string) {
+  const body = {
+    replyToken,
+    messages: typeof messages === "string" ? [{ type: "text", text: messages }] : messages
+  };
   const r = await fetch("https://api.line.me/v2/bot/message/reply", {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${LINE_TOKEN}`,
       "Content-Type": "application/json",
+      "Authorization": `Bearer ${LINE_TOKEN}`
     },
-    body: JSON.stringify({
-      replyToken,
-      messages: [{ type: "text", text }],
-    }),
+    body: JSON.stringify(body)
   });
   if (!r.ok) {
-    console.error("LINE reply error:", await r.text());
+    const txt = await r.text();
+    throw new Error(`LINE reply failed: ${r.status} ${txt}`);
   }
 }
 
-export function lineWebhookMiddleware(req: any, res: any, next: any) {
-  if (!LINE_SECRET) return next();
-  try {
-    const sig = req.get("x-line-signature") || "";
-    const raw = req.rawBody || Buffer.from("");
-    const hmac = crypto.createHmac("sha256", LINE_SECRET).update(raw).digest("base64");
-    if (sig !== hmac) return res.status(401).send("Bad signature");
-    next();
-  } catch (e) {
-    console.error("signature check:", e);
-    res.status(401).send("Bad signature");
+export async function linePush(to: string, messages: LineMessage[] | string) {
+  const body = {
+    to,
+    messages: typeof messages === "string" ? [{ type: "text", text: messages }] : messages
+  };
+  const r = await fetch("https://api.line.me/v2/bot/message/push", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${LINE_TOKEN}`
+    },
+    body: JSON.stringify(body)
+  });
+  if (!r.ok) {
+    const txt = await r.text();
+    throw new Error(`LINE push failed: ${r.status} ${txt}`);
   }
 }
 
-// ส่วนสำคัญใน src/services/lineClient.ts
-export async function handleWebhookEvent(ev: any) {
-  if (ev.type !== "message" || ev.message?.type !== "text") return;
-
-  const userId: string = ev.source?.userId || "";
-  const text: string = ev.message?.text || "";
-  const replyToken: string = ev.replyToken || "";
-
-  const last = userId ? await findLastByUserId(userId).catch(() => null) : null;
-  const returning = !!last;
-
-  const gpt = await classifyAndRespond(text);
-  const reply = (returning ? "ยินดีต้อนรับกลับค่ะ 🙏\n" : "") + gpt.reply;
-
-  // 1) ตอบลูกค้าก่อนเสมอ
-  if (replyToken) {
-    await replyText(replyToken, reply).catch((e) =>
-      console.error("reply error:", e)
-    );
-  }
-
-  // 2) ค่อยบันทึกชีต + ส่งแจ้งเตือน (ถ้าพังจะไม่กระทบการตอบ)
-  const ts = new Date().toISOString();
-  const values = [ts, userId, text, gpt.category, gpt.reason, gpt.reply];
-
-  try {
-    await appendLog(gpt.category, values);
-  } catch (e) {
-    console.error("appendLog error:", e);
-  }
-
-  try {
-    if (shouldAlert(gpt.category)) {
-      const alertMsg = [
-        "🚨 เคสใหม่จากลูกค้า BN9",
-        `หมวด: ${gpt.category}`,
-        `userId: ${userId || "-"}`,
-        `ข้อความ: ${text}`,
-        `สรุป: ${gpt.reason}`,
-        returning ? "🟡 ลูกค้าเก่า" : "🟢 ลูกค้าใหม่",
-      ].join("\n");
-      await sendAlertMessage(alertMsg);
-    }
-  } catch (e) {
-    console.error("sendAlert error:", e);
-  }
+export async function lineAlert(message: string) {
+  if (!LINE_ADMIN_GROUP_ID) return;
+  await linePush(LINE_ADMIN_GROUP_ID, message);
 }

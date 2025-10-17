@@ -1,85 +1,64 @@
-// src/services/sheets.ts
 import { google } from "googleapis";
 
-const SHEET_ID = process.env.GOOGLE_SHEET_ID || "";
-const SERVICE_EMAIL = process.env.GOOGLE_SERVICE_EMAIL || "";
-const PRIVATE_KEY = (process.env.GOOGLE_PRIVATE_KEY || "").replace(/\\n/g, "\n");
-const MASTER_TITLE_OVERRIDE = (process.env.MASTER_SHEET_TITLE || "").trim();
+const GOOGLE_SERVICE_EMAIL = process.env.GOOGLE_SERVICE_EMAIL;
+const GOOGLE_PRIVATE_KEY = (process.env.GOOGLE_PRIVATE_KEY || "").replace(/\\n/g, "\n");
+const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
+const MASTER_SHEET_TITLE = process.env.MASTER_SHEET_TITLE || "BN9 Logs";
 
-const jwt = new google.auth.JWT({
-  email: SERVICE_EMAIL,
-  key: PRIVATE_KEY,
-  scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-});
-
-const sheets = google.sheets({ version: "v4", auth: jwt });
-
-// ครอบชื่อแท็บให้ปลอดภัย (กรณีมีช่องว่าง/อักขระพิเศษ)
-function q(title: string) {
-  return `'${title.replace(/'/g, "''")}'`;
-}
-
-let cachedFirstTitle: string | null = null;
-
-async function getFirstSheetTitle(): Promise<string> {
-  if (MASTER_TITLE_OVERRIDE) return MASTER_TITLE_OVERRIDE;
-  if (cachedFirstTitle) return cachedFirstTitle;
-  const meta = await sheets.spreadsheets.get({
-    spreadsheetId: SHEET_ID,
-    fields: "sheets(properties(title))",
-  });
-  const title = meta.data.sheets?.[0]?.properties?.title || "Sheet1";
-  cachedFirstTitle = title;
-  return title;
-}
-
-export async function ensureSheet(title: string): Promise<void> {
-  const meta = await sheets.spreadsheets.get({
-    spreadsheetId: SHEET_ID,
-    fields: "sheets(properties(title))",
-  });
-  const exist = (meta.data.sheets || []).some((s) => s.properties?.title === title);
-  if (exist) return;
-  await sheets.spreadsheets.batchUpdate({
-    spreadsheetId: SHEET_ID,
-    requestBody: { requests: [{ addSheet: { properties: { title } } }] },
-  });
-}
-
-export async function appendToTab(title: string, values: (string | number)[]) {
-  if (!SHEET_ID || !SERVICE_EMAIL || !PRIVATE_KEY) {
-    console.log("[Sheets MOCK]", title, values);
-    return;
+function ensureEnv() {
+  if (!GOOGLE_SERVICE_EMAIL || !GOOGLE_PRIVATE_KEY || !GOOGLE_SHEET_ID) {
+    throw new Error("Google Sheets env is not fully configured");
   }
-  await ensureSheet(title);
+}
+
+function getSheets() {
+  ensureEnv();
+  const jwt = new google.auth.JWT(
+    GOOGLE_SERVICE_EMAIL,
+    undefined,
+    GOOGLE_PRIVATE_KEY,
+    ["https://www.googleapis.com/auth/spreadsheets"]
+  );
+  return google.sheets({ version: "v4", auth: jwt });
+}
+
+// Append one row: [timestamp, userId, userText, category, reason, emotion, tone, botReply]
+export async function appendLogRow(values: (string | number)[]) {
+  const sheets = getSheets();
+  const range = `'${MASTER_SHEET_TITLE}'!A:H`;
   await sheets.spreadsheets.values.append({
-    spreadsheetId: SHEET_ID,
-    range: `${q(title)}!A:F`,            // ← ครอบชื่อแท็บ
-    valueInputOption: "USER_ENTERED",
-    requestBody: { values: [values] },
+    spreadsheetId: GOOGLE_SHEET_ID!,
+    range,
+    valueInputOption: "RAW",
+    requestBody: { values: [values] }
   });
 }
 
-export async function findLastByUserId(userId: string) {
-  const master = await getFirstSheetTitle();
-  const resp = await sheets.spreadsheets.values.get({
-    spreadsheetId: SHEET_ID,
-    range: `${q(master)}!A:F`,           // ← ครอบชื่อแท็บ
-    majorDimension: "ROWS",
+// Get last N rows (mapped)
+export async function getLogs(limit = 50) {
+  const sheets = getSheets();
+  const range = `'${MASTER_SHEET_TITLE}'!A:H`;
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: GOOGLE_SHEET_ID!,
+    range
   });
-  const rows = resp.data.values || [];
-  for (let i = rows.length - 1; i >= 1; i--) {
-    const r = rows[i];
-    if ((r[1] || "") === userId) return { row: i + 1, values: r };
-  }
-  return null;
+  const rows = res.data.values || [];
+  const slice = rows.slice(-limit);
+  return slice.map(r => ({
+    timestamp: r[0] || "",
+    userId:    r[1] || "",
+    userText:  r[2] || "",
+    category:  r[3] || "",
+    reason:    r[4] || "",
+    emotion:   r[5] || "",
+    tone:      r[6] || "",
+    botReply:  r[7] || ""
+  }));
 }
 
-export async function appendLog(category: string, values: (string | number)[]) {
-  const master = await getFirstSheetTitle();
-  await appendToTab(master, values);
-  await appendToTab(category, values);
-}
+
+
+
 
 
 

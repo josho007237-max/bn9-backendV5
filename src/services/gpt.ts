@@ -1,62 +1,72 @@
 // src/services/gpt.ts
-// สร้างคำตอบอัตโนมัติสไตล์ "พี่พลอย BN9" + จัดหมวดหมู่แบบ JSON
+import fetch from 'node-fetch';
+import { systemAdvanced, userAdvanced, AdvancedGPTResponse } from './prompts.js';
 
 export type GPTResult = { reply: string; category: string; reason: string };
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
-const MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+const MODEL = process.env.OPENAI_DEFAULT_MODEL || 'gpt-4o-mini';
 
-export async function classifyAndRespond(userText: string): Promise<GPTResult> {
-  // MOCK ถ้าไม่มีคีย์
+/**
+ * Calls OpenAI to get a structured JSON response based on user text.
+ * Uses the "Advanced" persona for "พี่พลอย BN9".
+ * @param userText The text from the user.
+ * @returns A structured response object or a fallback object on error.
+ */
+export async function callOpenAI_JSON(userText: string): Promise<AdvancedGPTResponse> {
   if (!OPENAI_API_KEY) {
+    console.warn('OPENAI_API_KEY is not set. Returning mock data.');
     return {
-      reply: `รับทราบค่ะ: "${userText}" (MOCK)`,
-      category: 'อื่นๆ',
-      reason: 'ไม่มี OPENAI_API_KEY',
+      'ตอบลูกค้า': `พี่พลอยรับเรื่องแล้วนะคะ: "${userText}" (นี่คือข้อความทดสอบเนื่องจากไม่มี API Key)`,
+      'หมวด': 'อื่นๆ',
+      'อารมณ์ลูกค้า': 'ไม่ชัดเจน',
+      'โทนการตอบ': 'เป็นกลาง',
+      'เหตุผล': 'ไม่มี OPENAI_API_KEY',
     };
   }
-
-  const sys = [
-    'คุณคือ “พี่พลอย BN9” ตอบลูกค้าด้วยน้ำเสียงสุภาพ น่ารัก กระชับ และช่วยเหลือ',
-    'จัดหมวดให้เป็นหนึ่งใน: สมัคร, ฝากเงิน, ถอนเงิน, ยืนยันตัวตน, อื่นๆ',
-    'ตอบกลับเป็น JSON เท่านั้น: {"ตอบลูกค้า":"...","หมวด":"...","เหตุผล":"..."}',
-  ].join('\n');
 
   const body = {
     model: MODEL,
     messages: [
-      { role: 'system', content: sys },
-      { role: 'user', content: userText },
+      { role: 'system', content: systemAdvanced },
+      { role: 'user', content: userAdvanced(userText) },
     ],
-    temperature: 0.3,
+    temperature: 0.4,
+    response_format: { type: 'json_object' },
   };
 
-  const r = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-
-  if (!r.ok) {
-    const t = await r.text();
-    throw new Error(`OpenAI error ${r.status}: ${t}`);
-  }
-
-  const data = await r.json();
-  const text = data?.choices?.[0]?.message?.content ?? '{}';
-
   try {
-    const parsed = JSON.parse(text);
+    const r = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!r.ok) {
+      const errorText = await r.text();
+      throw new Error(`OpenAI API error ${r.status}: ${errorText}`);
+    }
+
+    const data: any = await r.json();
+    const rawContent = data?.choices?.[0]?.message?.content ?? '{}';
+
+    const parsed = JSON.parse(rawContent);
+    // Basic validation to ensure we have the expected structure
+    if (!parsed || typeof parsed !== 'object' || !parsed['ตอบลูกค้า']) {
+      throw new Error('Invalid JSON structure from OpenAI');
+    }
+    return parsed as AdvancedGPTResponse;
+  } catch (e) {
+    console.error('OpenAI call failed:', e);
     return {
-      reply: parsed['ตอบลูกค้า'] ?? 'รับทราบค่ะ',
-      category: parsed['หมวด'] ?? 'อื่นๆ',
-      reason: parsed['เหตุผล'] ?? 'ไม่มี',
+      'ตอบลูกค้า': 'ขออภัยค่ะ ระบบขัดข้องชั่วคราว 🙏 ลองทักมาอีกครั้งได้นะคะ',
+      'หมวด': 'อื่นๆ',
+      'อารมณ์ลูกค้า': 'ไม่ชัดเจน',
+      'โทนการตอบ': 'ขอโทษ',
+      'เหตุผล': 'เกิดข้อผิดพลาดขณะเรียกใช้งาน OpenAI',
     };
-  } catch {
-    // ถ้า GPT ไม่ส่ง JSON ตรง ๆ
-    return { reply: text, category: 'อื่นๆ', reason: 'รูปแบบไม่ใช่ JSON 100%' };
   }
 }
